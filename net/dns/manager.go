@@ -456,14 +456,26 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 	}
 	m.health.SetHealthy(OSConfigurationReadWarnable)
 
+	defaultRoutes := underlyingResolvers(base)
+	if len(defaultRoutes) == 0 && isSandboxedApple && !scopeApple {
+		// Mode B without any underlying resolver would break all public DNS:
+		// the OS would send every query to quad-100 and quad-100 would have
+		// nothing to forward to. Keep the previous configuration (if any)
+		// and report the problem so the health UI can flag it; a recompile
+		// after the next DNS-configuration change will retry the read.
+		// Scoped configs (scopeApple) do not need forwarders for OS-routed
+		// queries, so they tolerate a missing base config.
+		err := fmt.Errorf("OS base config has no resolvers to forward to")
+		m.health.SetUnhealthy(OSConfigurationReadWarnable, health.Args{health.ArgError: err.Error()})
+		return resolver.Config{}, OSConfig{}, err
+	} else if len(defaultRoutes) == 0 {
+		m.logf("dns: base config has no resolvers; quad-100 has no upstream for non-tailnet queries")
+	}
+
 	if isIOS && supportsSplitDNS && scopeApple {
 		// Include the authoritative MagicDNS roots, not just upstream routes.
 		// Do not union search-only domains: that would capture their queries.
 		ocfg.MatchDomains = cfg.matchDomains()
-	}
-	var defaultRoutes []*dnstype.Resolver
-	for _, ip := range base.Nameservers {
-		defaultRoutes = append(defaultRoutes, &dnstype.Resolver{Addr: ip.String()})
 	}
 	rcfg.Routes["."] = defaultRoutes
 	// Append base config search domains, but only if not already present.
@@ -476,6 +488,35 @@ func (m *Manager) compileConfig(cfg Config) (rcfg resolver.Config, ocfg OSConfig
 	}
 
 	return rcfg, ocfg, nil
+}
+
+// underlyingResolvers returns the resolvers that quad-100 should forward
+// non-tailnet queries to, derived from the OS's base configuration.
+//
+// Platforms that can recover the underlying configuration with more detail
+// than IP addresses (non-standard ports, DoH/DoT endpoints) populate
+// [OSConfig.Resolvers], which preserves that detail end to end. Otherwise we
+// fall back to plain IP:53 resolvers built from Nameservers. Note that the
+// result can be empty: callers that cannot serve queries without a catch-all
+// forwarder must check and handle that case.
+func underlyingResolvers(base OSConfig) []*dnstype.Resolver {
+	if len(base.Resolvers) > 0 {
+		out := make([]*dnstype.Resolver, 0, len(base.Resolvers))
+		for _, r := range base.Resolvers {
+			if r == nil || r.Addr == "" {
+				continue
+			}
+			out = append(out, r.Clone())
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	var out []*dnstype.Resolver
+	for _, ip := range base.Nameservers {
+		out = append(out, &dnstype.Resolver{Addr: ip.String()})
+	}
+	return out
 }
 
 func (m *Manager) disableSplitDNSOptimization() bool {

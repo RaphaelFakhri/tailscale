@@ -696,13 +696,17 @@ func TestManager(t *testing.T) {
 				SearchDomains: fqdns("tailscale.com", "universe.tf"),
 			},
 			split: false,
+			bs: OSConfig{
+				Nameservers:   mustIPs("192.168.1.1"),
+				SearchDomains: fqdns("coffee.shop"),
+			},
 			os: OSConfig{
 				Nameservers:   serviceAddr46,
-				SearchDomains: fqdns("tailscale.com", "universe.tf"),
+				SearchDomains: fqdns("tailscale.com", "universe.tf", "coffee.shop"),
 			},
 			rs: resolver.Config{
 				Routes: upstreams(
-					".", "",
+					".", "192.168.1.1",
 					"corp.com.", "2.2.2.2",
 					"bigco.net.", "3.3.3.3"),
 			},
@@ -793,12 +797,15 @@ func TestManager(t *testing.T) {
 				SearchDomains: fqdns("tailscale.com", "universe.tf"),
 			},
 			split: true,
+			bs: OSConfig{
+				Nameservers: mustIPs("8.8.8.8"),
+			},
 			os: OSConfig{
 				Nameservers:   serviceAddr46,
 				SearchDomains: fqdns("tailscale.com", "universe.tf"),
 			},
 			rs: resolver.Config{
-				Routes: upstreams(".", ""),
+				Routes: upstreams(".", "8.8.8.8"),
 				Hosts: hosts(
 					"dave.ts.com.", "1.2.3.4",
 					"bradfitz.ts.com.", "2.3.4.5"),
@@ -903,13 +910,16 @@ func TestManager(t *testing.T) {
 				SearchDomains: fqdns("tailscale.com", "universe.tf"),
 			},
 			split: true,
+			bs: OSConfig{
+				Nameservers: mustIPs("8.8.8.8"),
+			},
 			os: OSConfig{
 				Nameservers:   serviceAddr46,
 				SearchDomains: fqdns("tailscale.com", "universe.tf"),
 			},
 			rs: resolver.Config{
 				Routes: upstreams(
-					".", "",
+					".", "8.8.8.8",
 					"corp.com.", "2.2.2.2",
 				),
 				Hosts: hosts(
@@ -1009,13 +1019,16 @@ func TestManager(t *testing.T) {
 				SearchDomains: fqdns("optimistic-display.ts.net"),
 			},
 			split: true,
+			bs: OSConfig{
+				Nameservers: mustIPs("8.8.8.8"),
+			},
 			os: OSConfig{
 				Nameservers:   serviceAddr46,
 				SearchDomains: fqdns("optimistic-display.ts.net."),
 			},
 			rs: resolver.Config{
 				Routes: upstreams(
-					".", "",
+					".", "8.8.8.8",
 					"github.com", "https://dnsresolver.bigcorp.com/2f143",
 					"ts.net", "199.247.155.52",
 				),

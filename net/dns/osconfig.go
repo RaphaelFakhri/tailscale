@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"tailscale.com/feature/buildfeatures"
+	"tailscale.com/types/dnstype"
 	"tailscale.com/types/logger"
 	"tailscale.com/util/dnsname"
 )
@@ -66,6 +67,15 @@ type OSConfig struct {
 	// from the OS, which will only work with OSConfigurators that
 	// report SupportsSplitDNS()=true.
 	MatchDomains []dnsname.FQDN
+	// Resolvers is the full-fidelity form of Nameservers, populated only by
+	// OSConfigurators whose [OSConfigurator.GetBaseConfig] can recover more
+	// of the underlying resolver configuration than plain IP:53 addresses
+	// (non-standard ports, DoH/DoT endpoints). It is input to the DNS
+	// manager only: the manager blends it into quad-100's catch-all route
+	// when the tunnel resolver must serve as the OS primary. It is never
+	// applied to the OS itself, and [OSConfig.Equal] deliberately ignores
+	// it, because it does not affect the configuration installed on the OS.
+	Resolvers []*dnstype.Resolver `json:",omitempty"`
 }
 
 func (o *OSConfig) WriteToBufioWriter(w *bufio.Writer) {
@@ -108,7 +118,8 @@ func (o OSConfig) IsZero() bool {
 	return len(o.Hosts) == 0 &&
 		len(o.Nameservers) == 0 &&
 		len(o.SearchDomains) == 0 &&
-		len(o.MatchDomains) == 0
+		len(o.MatchDomains) == 0 &&
+		len(o.Resolvers) == 0
 }
 
 func (a OSConfig) Equal(b OSConfig) bool {
