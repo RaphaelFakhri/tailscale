@@ -2582,6 +2582,54 @@ func TestSetControlClientStatusSendsFullNetmapAsPeerChanges(t *testing.T) {
 	nw.check()
 }
 
+// TestSetControlClientStatusFullNetmapReportsRemovedPeers verifies that
+// peers missing from a full netmap reach peer-change watchers as
+// [ipn.Notify.PeersRemoved]; they upsert PeersChanged and would otherwise
+// keep the stale peers forever.
+func TestSetControlClientStatusFullNetmapReportsRemovedPeers(t *testing.T) {
+	tests := []struct {
+		name        string
+		next        []tailcfg.NodeView
+		wantRemoved []tailcfg.NodeID
+	}{
+		{"one-removed", []tailcfg.NodeView{makePeer(10)}, []tailcfg.NodeID{20, 30}},
+		{"last-removed", nil, []tailcfg.NodeID{10, 20, 30}},
+		{"none-removed", []tailcfg.NodeView{makePeer(10), makePeer(20), makePeer(30)}, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newTestLocalBackend(t)
+			b.SetControlClientStatus(b.cc, controlclient.Status{NetMap: &netmap.NetworkMap{
+				SelfNode: makePeer(1),
+				Peers:    []tailcfg.NodeView{makePeer(10), makePeer(20)},
+			}, LoggedIn: true})
+			// Added by delta, so it is only in the live peer set, not in
+			// the previous full netmap's Peers.
+			b.UpdateNetmapDelta([]netmap.NodeMutation{netmap.NodeMutationUpsert{Node: makePeer(30)}})
+
+			nw := newNotificationWatcher(t, b, ipnauth.Self)
+			nw.watch(ipn.NotifyPeerChanges, []wantedNotification{{
+				name: "full netmap with removals",
+				cond: func(t testing.TB, _ ipnauth.Actor, n *ipn.Notify) bool {
+					if n.SelfChange == nil {
+						return false
+					}
+					got := slices.Sorted(slices.Values(n.PeersRemoved))
+					if !slices.Equal(got, tt.wantRemoved) {
+						t.Errorf("PeersRemoved = %v; want %v", got, tt.wantRemoved)
+					}
+					return true
+				},
+			}})
+			b.SetControlClientStatus(b.cc, controlclient.Status{NetMap: &netmap.NetworkMap{
+				SelfNode: makePeer(1),
+				Peers:    tt.next,
+			}, LoggedIn: true})
+			nw.check()
+		})
+	}
+}
+
 // TestWatchNotificationsInitialStatusPeers verifies that the initial
 // status is sized to the subscription: Status.Peer entries are only
 // populated for watchers that subscribed to peer deltas, while
