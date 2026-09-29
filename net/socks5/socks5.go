@@ -240,16 +240,6 @@ func (c *Conn) handleTCP() error {
 	}
 	defer srv.Close()
 
-	// As of 2026-09-16, `srv.dial` always returns either a TCPConn-type
-	// connection, or such a connection wrapped by a [tsdial.sysConn],
-	// which passes down calls to half-close the connection to its
-	// underlying Conn.
-	srvHalfCloser, srvIsHalfCloser := srv.(nettype.HalfCloser)
-	// As of 2026-09-16, `c.clientConn` always originates from a TCP listener,
-	// sometimes split up by [proxymux.SplitSOCKSAndHTTP], which passes down
-	// calls to half-close the connection to its underlying Conn.
-	clientHalfCloser, clientIsHalfCloser := c.clientConn.(nettype.HalfCloser)
-
 	localAddr := srv.LocalAddr().String()
 	serverAddr, serverPort, err := splitHostPort(localAddr)
 	if err != nil {
@@ -272,38 +262,42 @@ func (c *Conn) handleTCP() error {
 	c.clientConn.Write(buf)
 
 	errc := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(c.clientConn, srv)
-		if err != nil {
-			err = fmt.Errorf("from backend to client: %w", err)
-		}
-		if clientIsHalfCloser {
-			err = errors.Join(err, clientHalfCloser.CloseWrite())
-		}
-		if srvIsHalfCloser {
-			err = errors.Join(srvHalfCloser.CloseRead())
-		}
-		errc <- err
-	}()
-	go func() {
-		_, err := io.Copy(srv, c.clientConn)
-		if err != nil {
-			err = fmt.Errorf("from client to backend: %w", err)
-		}
-		if clientIsHalfCloser {
-			err = errors.Join(err, clientHalfCloser.CloseRead())
-		}
-		if srvIsHalfCloser {
-			err = errors.Join(srvHalfCloser.CloseWrite())
-		}
-		errc <- err
-	}()
-	// Wait for both sides of the connection to close.
-	var errs []error
-	for range 2 {
-		errs = append(errs, <-errc)
+	go func() { errc <- pump(c.clientConn, srv, "from backend to client") }()
+	go func() { errc <- pump(srv, c.clientConn, "from client to backend") }()
+	if err := <-errc; err != nil {
+		// One direction failed, so tear down both connections to unblock
+		// the other direction and discard whatever error that causes it.
+		srv.Close()
+		c.clientConn.Close()
+		<-errc
+		return err
 	}
-	return errors.Join(errs...)
+	return <-errc
+}
+
+// pump copies from src to dst until src returns EOF or either side fails.
+//
+// On EOF it half-closes dst, if dst supports it, so dst's peer sees EOF while
+// the other direction of the proxied connection keeps flowing. It does not
+// half-close src's read side: that has no effect on the wire, and after src
+// has returned EOF, both macOS and Linux may reject the shutdown with
+// ENOTCONN.
+//
+// As of 2026-09-16, both ends of a proxied connection support half-closing:
+// [Server.dial] returns a [*net.TCPConn], possibly wrapped by a
+// tsdial.sysConn, and the client connection comes from a TCP listener,
+// possibly wrapped by proxymux.SplitSOCKSAndHTTP. Both wrappers pass
+// half-closes through to the underlying connection.
+func pump(dst, src net.Conn, dir string) error {
+	if _, err := io.Copy(dst, src); err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
+	}
+	if hc, ok := dst.(nettype.HalfCloser); ok {
+		if err := hc.CloseWrite(); err != nil {
+			return fmt.Errorf("%s: close write: %w", dir, err)
+		}
+	}
+	return nil
 }
 
 func (c *Conn) handleUDP() error {
